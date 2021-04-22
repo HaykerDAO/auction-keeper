@@ -36,6 +36,8 @@ from pymaker.lifecycle import Lifecycle
 from pymaker.model import Token
 from pymaker.numeric import Wad, Ray, Rad
 
+from web3.middleware import geth_poa_middleware
+
 from auction_keeper.gas import DynamicGasPrice, UpdatableGasPrice
 from auction_keeper.logic import Auction, Auctions, Reservoir
 from auction_keeper.model import ModelFactory
@@ -133,12 +135,16 @@ class AuctionKeeper:
         parser.add_argument("--debug", dest='debug', action='store_true',
                             help="Enable debug output")
 
+        parser.add_argument("--network", type=str, default='kovan', help="Network Name")
+        parser.add_argument("--log", type=str, default='./keeper.log', help="Log File Name")
+
         self.arguments = parser.parse_args(args)
 
         # Configure connection to the chain
         self.web3: Web3 = kwargs['web3'] if 'web3' in kwargs else web3_via_http(
             endpoint_uri=self.arguments.rpc_host, timeout=self.arguments.rpc_timeout, http_pool_size=100)
         self.web3.eth.defaultAccount = self.arguments.eth_from
+        self.web3.middleware_onion.inject(geth_poa_middleware, layer=0)
         register_keys(self.web3, self.arguments.eth_key)
         self.our_address = Address(self.arguments.eth_from)
 
@@ -156,12 +162,16 @@ class AuctionKeeper:
             raise RuntimeError("--from-block must be specified to kick off flop auctions")
 
         # Configure core and token contracts
-        self.mcd = DssDeployment.from_node(web3=self.web3)
+        #self.mcd = DssDeployment.from_node(web3=self.web3)
+        self.mcd = DssDeployment.from_network(web3=self.web3, network = self.arguments.network)
         self.vat = self.mcd.vat
         self.cat = self.mcd.cat
         self.vow = self.mcd.vow
         self.mkr = self.mcd.mkr
         self.dai_join = self.mcd.dai_adapter
+        
+        logging.info("vat: {self.vat}, cat: {self.vat}, mkr: {self.mkr}")
+
         if self.arguments.type == 'flip':
             self.collateral = self.mcd.collaterals[self.arguments.ilk]
             self.ilk = self.collateral.ilk
@@ -218,8 +228,23 @@ class AuctionKeeper:
         self.dead_since = {}
         self.lifecycle = None
 
-        logging.basicConfig(format='%(asctime)-15s %(levelname)-8s %(message)s',
-                            level=(logging.DEBUG if self.arguments.debug else logging.INFO))
+        logging.basicConfig(filemode="w",
+                    format='%(asctime)-15s %(levelname)-8s %(message)s',
+                    datefmt='%a %d %b %Y %H:%M:%S',
+                    level=(logging.DEBUG if self.arguments.debug else logging.INFO))
+        logging.getLogger('').setLevel(logging.DEBUG if self.arguments.debug else logging.INFO)
+
+        formatter = logging.Formatter('%(asctime)-15s %(levelname)-8s %(message)s')
+
+        fileHandler = logging.FileHandler(self.arguments.log)
+        fileHandler.setLevel(logging.DEBUG if self.arguments.debug else logging.INFO)
+        fileHandler.setFormatter(formatter)
+        logging.getLogger('').addHandler(fileHandler)
+
+        console = logging.StreamHandler()
+        console.setLevel(logging.DEBUG if self.arguments.debug else logging.INFO)
+        console.setFormatter(formatter)
+        logging.getLogger('').addHandler(console)
 
         # Create gas strategy used for non-bids and bids which do not supply gas price
         self.gas_price = DynamicGasPrice(self.arguments, self.web3)
@@ -237,11 +262,10 @@ class AuctionKeeper:
             for account in self.arguments.deal_for:
                 self.deal_for.add(Address(account))
 
-        # reduce logspew
-        logging.getLogger('urllib3').setLevel(logging.INFO)
-        logging.getLogger("web3").setLevel(logging.INFO)
-        logging.getLogger("asyncio").setLevel(logging.INFO)
-        logging.getLogger("requests").setLevel(logging.INFO)
+        logging.getLogger('urllib3').setLevel(logging.DEBUG if self.arguments.debug else logging.INFO)
+        logging.getLogger("web3").setLevel(logging.DEBUG if self.arguments.debug else logging.INFO)
+        logging.getLogger("asyncio").setLevel(logging.DEBUG if self.arguments.debug else logging.INFO)
+        logging.getLogger("requests").setLevel(logging.DEBUG if self.arguments.debug else logging.INFO)
 
     def main(self):
         def seq_func(check_func: callable):
@@ -408,7 +432,7 @@ class AuctionKeeper:
 
         # Look for unsafe vaults and bite them
         urns = self.urn_history.get_urns()
-        logging.debug(f"Evaluating {len(urns)} {self.ilk} urns to be bitten if any are unsafe")
+        logging.info(f"Evaluating {len(urns)} {self.ilk} urns to be bitten if any are unsafe")
 
         for i, urn in enumerate(urns.values()):
             if i % 500 == 0:  # Every 500 vaults, free some CPU and then update ilk.rate
@@ -416,8 +440,9 @@ class AuctionKeeper:
                     return
                 time.sleep(1)
                 ilk = self.vat.ilk(self.ilk.name)  # ilk.rate changes every block
-
-            if self.can_bite(ilk, urn, box, dunk, chop):
+            can_bite_flag = self.can_bite(ilk, urn, box, dunk, chop)
+            logging.info(f"Evaluating can bite: {can_bite_flag}, urn: {urn}")
+            if can_bite_flag:
                 if self.arguments.bid_on_auctions and available_dai == Wad(0):
                     self.logger.warning(f"Skipping opportunity to bite urn {urn.address} "
                                         "because there is no Dai to bid")
@@ -680,7 +705,7 @@ class AuctionKeeper:
             # if no transaction in progress, send a new one
             transaction_in_progress = auction.transaction_in_progress()
 
-            logging.debug(f"Handling bid for auction {id}: tx in progress={transaction_in_progress is not None}, " 
+            logging.info(f"Handling bid for auction {id}: tx in progress={transaction_in_progress is not None}, " 
                           f"auction.price={auction.price}, bid_price={bid_price}")
 
             # if transaction has not been submitted...
