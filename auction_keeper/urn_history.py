@@ -78,6 +78,6 @@ class ChainUrnHistoryProvider(UrnHistoryProvider):
             if address not in self.cache:
                 self.cache[address] = self.mcd.vat.urn(self.ilk, address)
 
-        logger.debug(f"Updated {len(self.cache)} urns in {(datetime.now() - start).seconds} seconds")
+        logger.info(f"Updated {len(self.cache)} urns in {(datetime.now() - start).seconds} seconds")
         self.cache_block = to_block
         return self.cache
