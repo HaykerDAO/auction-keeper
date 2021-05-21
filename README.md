@@ -3,6 +3,8 @@
 [![Build Status](https://travis-ci.com/makerdao/auction-keeper.svg?branch=master)](https://travis-ci.com/makerdao/auction-keeper)
 [![codecov](https://codecov.io/gh/makerdao/auction-keeper/branch/master/graph/badge.svg)](https://codecov.io/gh/makerdao/auction-keeper)
 
+This auction keeper is forked from auction keeper of MakerDAO. It adds the network parameter which should be hecomainnet.
+
 The _DAI Stablecoin System_ incentivizes external agents, called _keepers_, to automate certain operations around the
 Ethereum blockchain.  The purpose of `auction-keeper` is to:
  * Seek out opportunities and start new auctions
